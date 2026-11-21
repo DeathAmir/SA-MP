@@ -41,20 +41,20 @@ jobs:
           choco install directx-sdk --version=9.29.1962.02 --yes --no-progress
 
           $sdk = Join-Path ${env:ProgramFiles(x86)} "Microsoft DirectX SDK (June 2010)"
-          if (-not (Test-Path (Join-Path $sdk "Include\\d3dx9.h"))) {
+          if (-not (Test-Path (Join-Path $sdk "Include\d3dx9.h"))) {
             $sdk = Join-Path $env:ProgramFiles "Microsoft DirectX SDK (June 2010)"
           }
           $include = Join-Path $sdk "Include"
-          $library = Join-Path $sdk "Lib\\x86"
+          $library = Join-Path $sdk "Lib\x86"
 
           if (-not (Test-Path (Join-Path $include "d3dx9.h"))) {
-            $found = Get-ChildItem "C:\\Program Files*" -Directory -Filter "Microsoft DirectX SDK (June 2010)" -ErrorAction SilentlyContinue |
-              Where-Object { Test-Path (Join-Path $_.FullName "Include\\d3dx9.h") } |
+            $found = Get-ChildItem "C:\Program Files*" -Directory -Filter "Microsoft DirectX SDK (June 2010)" -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path (Join-Path $_.FullName "Include\d3dx9.h") } |
               Select-Object -First 1
             if ($found) {
               $sdk = $found.FullName
               $include = Join-Path $sdk "Include"
-              $library = Join-Path $sdk "Lib\\x86"
+              $library = Join-Path $sdk "Lib\x86"
             }
           }
 
@@ -65,7 +65,7 @@ jobs:
             throw "DirectX SDK x86 library not found: $library"
           }
 
-          "DXSDK_DIR=$sdk\\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DXSDK_DIR=$sdk\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "DirectX SDK root: $sdk"
           Write-Host "DirectX include: $include"
           Write-Host "DirectX x86 libraries: $library"
@@ -73,10 +73,10 @@ jobs:
       - name: Verify Visual C++ v142 toolset
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -property installationPath
           if (-not $vs) { throw "Visual Studio installation was not found." }
-          $toolset = Join-Path $vs "VC\\Tools\\MSVC"
+          $toolset = Join-Path $vs "VC\Tools\MSVC"
           $v142 = Get-ChildItem $toolset -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "14.2*" }
           if (-not $v142) { throw "The v142 MSVC toolset required by this source is missing on the runner." }
           Write-Host "Found MSVC v142: $($v142.Name)"
@@ -87,7 +87,7 @@ jobs:
           $sdk = $env:DXSDK_DIR
           if (-not $sdk) { throw "DXSDK_DIR is not set for the build step." }
           $include = Join-Path $sdk "Include"
-          $library = Join-Path $sdk "Lib\\x86"
+          $library = Join-Path $sdk "Lib\x86"
           if (-not (Test-Path (Join-Path $include "d3dx9.h"))) { throw "Missing d3dx9.h in $include" }
           msbuild client/client.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=x86 /p:WindowsTargetPlatformVersion=10.0 "/p:DXSDK_DIR=$sdk"
 
