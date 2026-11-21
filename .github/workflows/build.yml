@@ -1,0 +1,157 @@
+name: Build SA-MP Windows binaries
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: samp-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    name: Build Windows x86 binaries
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install DirectX SDK June 2010
+        shell: pwsh
+        run: |
+          choco install directx-sdk --version=9.29.1962.02 --yes --no-progress
+          $candidates = @(
+            $env:DXSDK_DIR,
+            "${env:ProgramFiles(x86)}\Microsoft DirectX SDK (June 2010)",
+            "${env:ProgramFiles}\Microsoft DirectX SDK (June 2010)"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "Include\d3dx9.h")) }
+          if (-not $candidates) {
+            throw "DirectX SDK June 2010 was not found after installation."
+          }
+          "DXSDK_DIR=$($candidates[0])\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Using DirectX SDK: $($candidates[0])"
+
+      - name: Verify Visual C++ v142 toolset
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "Visual Studio installation was not found." }
+          $toolset = Join-Path $vs "VC\Tools\MSVC"
+          $v142 = Get-ChildItem $toolset -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "14.2*" }
+          if (-not $v142) { throw "The v142 MSVC toolset required by this source is missing on the runner." }
+          Write-Host "Found MSVC v142: $($v142.Name)"
+
+      - name: Build SA-MP client (Release x86)
+        run: msbuild client/client.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=x86 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Build SA-MP server (Release x86)
+        run: msbuild server/server.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=x86 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Build announce utility (Release x86)
+        continue-on-error: true
+        run: msbuild announce/announce.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=x86 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Build debug launcher (Release x86)
+        continue-on-error: true
+        run: msbuild launch3/launch3.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=x86 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Assemble and validate release package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $PWD "dist\SA-MP-Windows-x86"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+
+          $required = @(
+            @{ Path = "client\Release\samp.dll"; Name = "client\samp.dll" },
+            @{ Path = "server\Release\server.exe"; Name = "server\server.exe" }
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item.Path)) {
+              throw "Required build output is missing: $($item.Path)"
+            }
+            $destination = Join-Path $package $item.Name
+            New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+            Copy-Item $item.Path $destination -Force
+          }
+
+          $optional = @(
+            @{ Path = "announce\Release\announce.exe"; Name = "tools\announce.exe" },
+            @{ Path = "launch3\Release\samp_debug.exe"; Name = "tools\samp_debug.exe" },
+            @{ Path = "archive\build\samp.saa"; Name = "client\samp.saa" }
+          )
+          foreach ($item in $optional) {
+            if (Test-Path $item.Path) {
+              $destination = Join-Path $package $item.Name
+              New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+              Copy-Item $item.Path $destination -Force
+            } else {
+              Write-Warning "Optional release file not found: $($item.Path)"
+            }
+          }
+
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" (Join-Path $package "README-source.md") -Force
+          }
+
+          $manifest = @(
+            "SA-MP Windows x86 build",
+            "Source: https://github.com/${{ github.repository }}",
+            "Commit: ${{ github.sha }}",
+            "Built: ${{ github.run_id }}",
+            "",
+            "Required outputs: client/samp.dll, server/server.exe",
+            "Optional outputs are included only when their build or source file exists."
+          )
+          $manifest | Set-Content (Join-Path $package "BUILD-INFO.txt") -Encoding utf8
+
+          $files = Get-ChildItem $package -File -Recurse
+          if (-not ($files | Where-Object { $_.Name -eq "samp.dll" })) { throw "samp.dll is not in the package." }
+          if (-not ($files | Where-Object { $_.Name -eq "server.exe" })) { throw "server.exe is not in the package." }
+
+          $zip = Join-Path $PWD "dist\SA-MP-Windows-x86.zip"
+          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $zip -CompressionLevel Optimal -Force
+          if (-not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1024) {
+            throw "Release ZIP was not created correctly."
+          }
+          Get-Item $zip | Format-List FullName,Length
+
+      - name: Upload build ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: SA-MP-Windows-x86
+          path: dist/SA-MP-Windows-x86.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('SA-MP Windows Build #{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          make_latest: false
+          generate_release_notes: false
+          files: dist/SA-MP-Windows-x86.zip
